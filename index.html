@@ -302,32 +302,88 @@
       // Process suggestion with LLM
       const processWithLLM = async (suggestionText, currentSite) => {
         try {
+          // Create a structured representation of the current site with labeled sections
+          const siteStructure = {
+            sections: [
+              {
+                id: "main-content",
+                label: "Main Content Area",
+                html: currentSite.html,
+                description: "The main content area of the website that displays dynamic content"
+              },
+              {
+                id: "styles",
+                label: "CSS Styles",
+                css: currentSite.css,
+                description: "Custom CSS styles for the website appearance"
+              },
+              {
+                id: "interactivity",
+                label: "JavaScript Functionality",
+                js: currentSite.js,
+                description: "JavaScript code that adds interactivity to the website"
+              }
+            ]
+          };
+          
           const completion = await websim.chat.completions.create({
             messages: [
               {
                 role: "system",
                 content: `You are an AI website developer that modifies websites based on user suggestions.
-                You'll receive the current HTML, CSS, and JS of a website, along with a user suggestion.
-                Your task is to understand the suggestion and implement the requested changes.
-                Return ONLY a JSON object with these fields:
-                - html: The modified HTML code
-                - css: The modified CSS code 
-                - js: The modified JavaScript code
-                - explanation: A brief explanation of changes you made
                 
-                Make incremental changes that build on the existing site. Don't rewrite everything unless specifically asked.
-                Ensure your code is valid and error-free.`
+                # WEBSITE STRUCTURE
+                The website has three main components that can be modified:
+                1. HTML: The structure and content of the page
+                2. CSS: The styles that control the appearance
+                3. JavaScript: The code that adds interactivity
+                
+                # REFERENCE GUIDE
+                When referring to specific parts of code, use these labeled sections:
+                ${siteStructure.sections.map(section => 
+                  `- [${section.id}]: ${section.label} - ${section.description}`
+                ).join('\n')}
+                
+                # INSTRUCTIONS
+                - Analyze the user's suggestion carefully
+                - Determine which parts of the website need to be modified
+                - Implement the requested changes incrementally
+                - Return a complete version of each component (HTML, CSS, JS)
+                - If a component doesn't need changes, return the original
+                - Include a detailed explanation of your changes
+                
+                # RESPONSE FORMAT
+                Return a JSON object with these fields:
+                - html: Complete HTML content (modified or original)
+                - css: Complete CSS content (modified or original)
+                - js: Complete JavaScript content (modified or original)
+                - explanation: A detailed explanation of all changes made
+                
+                Important: Your response must contain valid, complete code for each section.`
               },
               {
                 role: "user",
-                content: `Current website:
-                HTML: ${currentSite.html}
-                CSS: ${currentSite.css || ""}
-                JS: ${currentSite.js || ""}
+                content: `# CURRENT WEBSITE CODE
                 
-                User suggestion: ${suggestionText}
+                ## HTML
+                \`\`\`html
+                ${currentSite.html}
+                \`\`\`
                 
-                Please modify the website based on this suggestion. Return just the modified code as JSON.`
+                ## CSS
+                \`\`\`css
+                ${currentSite.css || "/* No custom CSS yet */"}
+                \`\`\`
+                
+                ## JavaScript
+                \`\`\`javascript
+                ${currentSite.js || "/* No custom JavaScript yet */"}
+                \`\`\`
+                
+                # USER SUGGESTION
+                "${suggestionText}"
+                
+                Please modify the website based on this suggestion. Consider which components need to be changed and implement the requested modifications. Return complete code for all components.`
               }
             ],
             json: true
@@ -336,18 +392,24 @@
           let result;
           try {
             result = JSON.parse(completion.content);
+            
+            // Validate the response has the required fields
+            if (!result.html || typeof result.html !== 'string') {
+              return { error: "Invalid LLM response: Missing or invalid HTML" };
+            }
+            
+            return { 
+              content: {
+                html: result.html,
+                css: result.css || currentSite.css || "",
+                js: result.js || currentSite.js || ""
+              },
+              explanation: result.explanation || "Changes applied successfully."
+            };
           } catch (e) {
+            console.error("Failed to parse LLM response:", e, completion.content);
             return { error: "Failed to parse LLM response" };
           }
-          
-          return { 
-            content: {
-              html: result.html,
-              css: result.css,
-              js: result.js
-            },
-            explanation: result.explanation
-          };
         } catch (error) {
           console.error("LLM processing error:", error);
           return { error: "Failed to process with AI" };
@@ -370,24 +432,31 @@
             originalConsoleError.apply(this, arguments);
           };
           
-          // Add content to the iframe
+          // Write the content to the iframe without using template literals
           const iframeDoc = iframe.contentWindow.document;
           iframeDoc.open();
           
-          // Construct the content parts separately to avoid nested template literals
-          const htmlStart = '<!DOCTYPE html><html><head><style>';
-          const cssContent = content.css || '';
-          const htmlMiddle = '</style></head><body>';
-          const htmlContent = content.html || '';
-          const scriptStart = '<script>';
-          const jsContent = content.js || '';
-          const scriptEnd = '<\/script>'; // Properly escaped script closing tag
-          const htmlEnd = '</body></html>';
+          // Construct a safe HTML document with the content
+          const htmlDoc = [
+            '<!DOCTYPE html>',
+            '<html>',
+            '<head>',
+            '<style>',
+            content.css || '',
+            '</style>',
+            '</head>',
+            '<body>',
+            content.html || '',
+            '<script>',
+            'try {',
+            content.js || '',
+            '} catch(e) { console.error("JS Error:", e.message); }',
+            '<\/script>',
+            '</body>',
+            '</html>'
+          ].join('\n');
           
-          // Combine all parts without using nested template literals
-          const combinedContent = htmlStart + cssContent + htmlMiddle + htmlContent + scriptStart + jsContent + scriptEnd + htmlEnd;
-          
-          iframeDoc.write(combinedContent);
+          iframeDoc.write(htmlDoc);
           iframeDoc.close();
           
           // Wait a bit to check for errors
@@ -414,7 +483,7 @@
         useEffect(() => {
           // Execute JavaScript after the component is mounted
           try {
-            if (js) {
+            if (js && js.trim()) {
               // Create a function from the JS string and execute it
               const executeJs = new Function(js);
               executeJs();
